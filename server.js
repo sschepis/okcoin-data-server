@@ -40,6 +40,23 @@ var TickerSchema = mongoose.Schema({
     vol : Number
 });
 var TickerModel = mongoose.model('Ticker', TickerSchema);
+TickerModel.find(function(err, t) {
+  for(var k in t) {
+    k = t[k];
+    ticker.push({
+        timestamp: new Date(k.timestamp).getTime(),
+        contractId : k.contractId,
+        buy : k.buy,
+        high : k.high,
+        low : k.low,
+        sell : k.sell,
+        hold_amount : k.hold_amount,
+        last : k.last,
+        unitAmount : k.unitAmount,
+        vol : k.vol
+    });
+  }
+});
 
 var TradeSchema = mongoose.Schema({
     timestamp : { type: Date, default: Date.now },
@@ -48,7 +65,17 @@ var TradeSchema = mongoose.Schema({
     vol : Number
 });
 var TradeModel = mongoose.model('Trade', TradeSchema);
-
+TradeModel.find(function(err, t) {
+  for(var k in t) {
+    k = t[k];
+    trades.push({
+        timestamp: new Date(k.timestamp).getTime(),
+        price : k.price,
+        vol : k.vol,
+        type : k.type
+    });
+  }
+});
 
 var socketlist = [];
 var ok, io, http, httpserver;
@@ -56,39 +83,35 @@ var ok, io, http, httpserver;
 var getTicker = function(req, res) {
     var from = req.query.from;
     var to = req.query.to;
-    if(!(from && to)) {
-        var d = new Date();
-        to = d.getTime();
-        d.setHours(d.getHours()-24);
-        from = d.getTime();
-    }
+    if(from) from = parseInt(from);
+    if(to) to = parseInt(to);
+
+    var t = _.clone(ticker).reverse();
     var out = [];
-    for(var k in ticker) {
-        k = ticker[k];
-        if(from <= k.timestamp && to >= k.timestamp) {
-            out.push(k);
-        }
+    for(var k in t) {
+        k = t[k];
+        if(from && from > parseInt(k.timestamp)) continue;
+        if(to && to < parseInt(k.timestamp)) continue;
+        out.push(k);
     }
-    res.send(ticker);
+    res.send(out.reverse());
 };
 
 var getTrades = function(req, res) {
     var from = req.query.from;
     var to = req.query.to;
-    if(!(from && to)) {
-        var d = new Date();
-        to = d.getTime();
-        d.setHours(d.getHours()-24);
-        from = d.getTime();
-    }
+    if(from) from = parseInt(from);
+    if(to) to = parseInt(to);
+
+    var t = _.clone(trades).reverse();
     var out = [];
-    for(var k in trades) {
-        k = trades[k];
-        if(from <= k.timestamp && to >= k.timestamp) {
-            out.push(k);
-        }
+    for(var k in t) {
+        k = t[k];
+        if(from && from > parseInt(k.timestamp)) continue;
+        if(to && to < parseInt(k.timestamp)) continue;
+        out.push(k);
     }
-    res.send(out);
+    res.send(out.reverse());
 };
 
 
@@ -111,17 +134,23 @@ var clientDisconnected = function(socket) {
     }
 };
 
-var clientHistory = function(socket) {
+var sendTradesData = function(socket) {
     send(socket, 'trades', trades);
 };
 
-var clientHistory = function(socket) {
+var sendTickerData = function(socket) {
     send(socket, 'ticker', ticker);
+};
+
+var sendHistoryData = function(socket) {
+    sendTradesData(socket);
 };
 
 var clientConnected = function(socket) {
     socket.on('disconnect', clientDisconnected);
-    socket.on('history', clientHistory);
+    socket.on('history', sendHistoryData);
+    socket.on('trades', sendTradesData);
+    socket.on('ticker', sendTickerData);
     socketlist.push(socket);
     send(socket, {message: 'connected'});
 };
@@ -134,22 +163,19 @@ var setupOKCoinSubscription = function(next) {
                 var ti = new TickerModel(data.data);
                 ti.save(function (err) {});
                 var d = new Date();
-                d.addHours(15);
                 data.data.timestamp = d;
                 ticker.push(data.data);
                 data.data.timestamp =  d.getTime();
                 broadcast('ticker', data.data);
-                log('wrote 1 ticker to db.');
             } else if(data.channel === 'ok_btcusd_future_trade_this_week') {
                 var ao = [];
                 for(var k in data.data) {
                     k = data.data[k];
-                    var d = new Date().addHours(15);
-                    var dp = k[2].split(':');
-                    d.setHours(dp[0]);
-                    d.setMinutes(dp[1]);
-                    d.setSeconds(dp[2]);
-                    d.subHours(15);
+                    var d = new Date();
+                    // var dp = k[2].split(':');
+                    // d.setHours(dp[0]);
+                    // d.setMinutes(dp[1]);
+                    // d.setSeconds(dp[2]);
                     var o = {
                         timestamp: d,
                         price : parseFloat(k[0]),
@@ -157,16 +183,14 @@ var setupOKCoinSubscription = function(next) {
                         type : k[3]
                     };
                     var ti = new TradeModel(o);
-                    ti.save(function (err) {});;
+                    ti.save(function (err) {});
                     trades.push(o);
                     o.timestamp = d.getTime();
                     ao.push(o);
                 }
                 broadcast('trades', ao);
-                log('wrote ' + data.data.length + ' trades to db.');
             }
         });
-        connection.send("{'event':'addChannel','channel':'ok_btcusd_future_ticker_this_week'}");
         connection.send("{'event':'addChannel','channel':'ok_btcusd_future_trade_this_week'}");
         next();
     });
